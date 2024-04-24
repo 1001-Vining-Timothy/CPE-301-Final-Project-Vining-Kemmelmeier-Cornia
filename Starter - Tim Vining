@@ -3,20 +3,6 @@
 #define RDA 0x80
 #define TBE 0x20 
 
-const int ROW_NUM = 4; //four rows
-const int COLUMN_NUM = 4; //four columns
-
-char keys[ROW_NUM][COLUMN_NUM] = {
-  {'1','2','3', 'A'},
-  {'4','5','6', 'B'},
-  {'7','8','9', 'C'},
-  {'*','0','#', 'D'}
-};
-
-byte pin_rows[ROW_NUM] = {48, 46, 44, 42}; //connect to the row pinouts of the keypad
-byte pin_column[COLUMN_NUM] = {40, 38, 36, 34}; //connect to the column pinouts of the keypad
-Keypad keypad = Keypad(makeKeymap(keys), pin_rows, pin_column, ROW_NUM, COLUMN_NUM );
-
 // LCD pins <--> Arduino pins
 const int RS = 11, EN = 12, D4 = 2, D5 = 3, D6 = 4, D7 = 5;
 int right=0,up=0;
@@ -39,20 +25,35 @@ volatile unsigned char *myTCCR1C  = (unsigned char *) 0x82;
 volatile unsigned char *myTIMSK1  = (unsigned char *) 0x6F;
 volatile unsigned char *myTIFR1   = (unsigned char *) 0x36;
 volatile unsigned int  *myTCNT1   = (unsigned  int *) 0x84;
+//ADC
+volatile unsigned char* my_ADMUX = (unsigned char*) 0x7C;
+volatile unsigned char* my_ADCSRB = (unsigned char*) 0x7B;
+volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
+volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
 
 
 void setup()
 {
   //setup the UART
-  U0int(9600);
+  U0Init(9600);
   //setup the ADC
   adc_init();
+  //LCD
+  lcd.begin(16,2);
 }
 
 void loop() 
 {
-
-
+  //LCD
+  char key;
+  if (kbhit())
+  {
+    lcd.clear();
+    lcd.setCursor(0,0);
+    key = getChar();
+    putChar(key);
+    lcd.write(key);
+  }
 }
 
 //UART FUNCTIONS

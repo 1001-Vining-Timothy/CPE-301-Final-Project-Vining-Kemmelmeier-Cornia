@@ -1,0 +1,87 @@
+/*
+ * Setup state machine and LEDs
+ * Also figured out millis() function
+*/
+
+volatile unsigned char* port_e = (unsigned char*)0x2E;
+volatile unsigned char* ddr_e = (unsigned char*)0x2D;
+volatile unsigned char* pin_e = (unsigned char*)0x2C;
+
+volatile unsigned char* port_g = (unsigned char*)0x34;
+volatile unsigned char* ddr_g = (unsigned char*)0x33;
+volatile unsigned char* pin_g = (unsigned char*)0x32;
+
+void setup() {
+  //set PE3 (pin 5) to OUTPUT
+  *ddr_e |= 0x01 << 3;
+  //set PG5 (pin 4) to OUTPUT
+  *ddr_g |= 0x01 << 5;
+  //set PE5 (pin 3) to OUTPUT
+  *ddr_e |= 0x01 << 5;
+  //set PE4 (pin 2) to OUTPUT
+  *ddr_e |= 0x01 << 4;
+}
+
+int state = 0;
+long previousMillis = 0;
+long interval = 3000;
+
+void loop() {
+  //turn off all LEDs
+  *pin_e &= ~(0x01 << 3);
+  *pin_g &= ~(0x01 << 5);
+  *pin_e &= ~(0x01 << 5);
+  *pin_e &= ~(0x01 << 4);
+
+  /* DISABLED */
+  if(state == 1) {
+    //yellow LED on
+    *pin_g |= 0x01 << 5; //4 high
+
+    //fan off
+
+    //vent position should be adjustable
+  }
+
+  /* IDLE */
+  if(state == 2) {
+    //green LED on
+    *pin_e |= 0x01 << 3; //5 high
+
+    //fan off
+
+    //temp and humidity displayed on LCD
+
+    //vent position should be adjustable
+  }
+
+  /* RUNNING */
+  if(state == 3) {
+    //blue LED on
+    *pin_e |= 0x01 << 5; //3 high
+
+    //on entry start fan
+
+    //on exit stop fan
+
+    //vent position should be adjustable
+  }
+
+  /* ERROR */
+  if(state == 4) {
+    //red LED on
+    *pin_e |= 0x01 << 4; //2 high
+
+    //display error message on LCD
+  } 
+
+  //switch state every (interval) milliseconds
+  unsigned long currentMillis = millis();
+  if(currentMillis - previousMillis > interval) {
+    previousMillis = currentMillis;
+    state++;
+    if(state >= 5) {
+      state = 1;
+    }
+  }
+}

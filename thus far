@@ -1,6 +1,10 @@
 #include <LiquidCrystal.h>
 #include <Keypad.h>
+#include <I2C_RTC.h>
+static DS1307 RTC;
 #include <dht.h>
+#include <Stepper.h>
+const int stepsPerRevolution = 2038;
 dht DHT;
 #define DHT11_PIN 53
 #define RDA 0x80
@@ -8,24 +12,12 @@ dht DHT;
 #define POWER_PIN 7
 #define SIGNAL_PIN A5
 
-const int ROW_NUM = 4; //four rows
-const int COLUMN_NUM = 4; //four columns
-
-char keys[ROW_NUM][COLUMN_NUM] = {
-  {'1','2','3', 'A'},
-  {'4','5','6', 'B'},
-  {'7','8','9', 'C'},
-  {'*','0','#', 'D'}
-};
-
-byte pin_rows[ROW_NUM] = {48, 46, 44, 42}; //connect to the row pinouts of the keypad
-byte pin_column[COLUMN_NUM] = {40, 38, 36, 34}; //connect to the column pinouts of the keypad
-Keypad keypad = Keypad(makeKeymap(keys), pin_rows, pin_column, ROW_NUM, COLUMN_NUM );
+// Creates an instance of stepper class
+// Pins entered in sequence IN1-IN3-IN2-IN4 for proper step sequence
+Stepper myStepper = Stepper(stepsPerRevolution, 8, 10, 9, 11);
 
 // LCD pins <--> Arduino pins
 const int RS = 50, EN = 52, D4 = 45, D5 = 47, D6 = 49, D7 = 51;
-int right=0,up=0;
-int dir1=0,dir2=0;
 LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
 
 // UART Pointers
@@ -63,33 +55,37 @@ int value = 0;
 int temp = 0;
 int humidity = 0;
 /*
- * Setup state machine and LEDs
- * Also figured out millis() function
+* Setup state machine and LEDs
+* Also figured out millis() function
 */
 volatile unsigned char* port_e = (unsigned char*)0x2E;
 volatile unsigned char* ddr_e = (unsigned char*)0x2D;
 volatile unsigned char* pin_e = (unsigned char*)0x2C;
-
 volatile unsigned char* port_g = (unsigned char*)0x34;
 volatile unsigned char* ddr_g = (unsigned char*)0x33;
 volatile unsigned char* pin_g = (unsigned char*)0x32;
+
+
 int state = 0;
 long previousMillis = 0;
-long interval = 3000;
+long interval = 60000;
 
-//START BUTTON ATTACH_INTERRUPT
-const byte ledPin = 3;
-const byte interruptPin = 18;
-volatile byte status = LOW;
+float temp_threshold = 24;
 
-float temp_threshold = 70;
+//Fan motor
+int speedPin = 23;
+int dir1 = 25;
+int dir2 = 27;
+int mSpeed = 75;
 
 void setup()
 {
   //setup the UART
   U0Init(9600);
+
   //setup the ADC
   adc_init();
+
   //LCD
   lcd.begin(16,2);
   lcd.setCursor(0,0);
@@ -97,6 +93,18 @@ void setup()
   lcd.setCursor(0,1);
   lcd.print("Humidity:");
 
+  //Real Time Clock
+  RTC.begin();
+  RTC.setHourMode(CLOCK_H12);
+  if (RTC.getHourMode() == CLOCK_H12) {
+    RTC.setMeridiem(HOUR_PM);
+  }
+
+  //Fan motor
+  int mSpeed = 90;
+  pinMode(speedPin, OUTPUT);
+  pinMode(dir1, OUTPUT);
+  pinMode(dir, OUTPUT);
   //Water Level
   //set PH4 to output
   *portDDRH |= 0x10;
@@ -107,10 +115,10 @@ void setup()
   //Start button Digital 18 - PD3
   //Stop button Digital 19 - PD2
   //Reset button Digitial 26 - PA4
-  /**portDDRD |= 0xF7; // start & stop button set to input
+  *portDDRD |= 0xF7; // start & stop button set to input
   *portD |= 0x01 << 3; // enable pullup resistor on start button
-  *pinD |= ~0x01 << 3;
-  attachInterrupt(digitalPinToInterrupt(interruptPin), start, CHANGE);*/
+  *pinD |= ~0x01 << 3; // set start to low
+  attachInterrupt(digitalPinToInterrupt(18), start, CHANGE);
   
   //set PE3 (pin 5) to OUTPUT -- ERROR (RED)
   *ddr_e |= 0x01 << 3;
@@ -120,17 +128,19 @@ void setup()
   *ddr_e |= 0x01 << 5;
   //set PE4 (pin 2) to OUTPUT -- RUNNING (BLUE)
   *ddr_e |= 0x01 << 4;
-  state = 1;
 
+  // set state to Disabled 
+  state = 1;
 }
 
 void loop() 
 {
   int chk = DHT.read(DHT11_PIN);
-  if((DHT.temperature * 9 / 5 + 32) > temp_threshold) {
+  if((DHT.temperature) > temp_threshold) {
     state = 3;
     LCD_DISPLAY();
   }
+
   /* DISABLED */
   if(state == 1) {
     LEDS_OFF();
@@ -144,6 +154,7 @@ void loop()
     LEDS_OFF();
     //green LED on
     *pin_e |= 0x01 << 5;
+    LCD_DISPLAY();
     //fan off
     //temp and humidity displayed on LCD
     
@@ -168,18 +179,16 @@ void loop()
     *pin_e |= 0x01 << 3;
     //display error message on LCD
     LCD_ERROR();
-
   } 
-  
+
   //switch state every (interval) milliseconds
-  /*unsigned long currentMillis = millis();
+  unsigned long currentMillis = millis();
   if(currentMillis - previousMillis > interval) {
     previousMillis = currentMillis;
-    state++;
-    if(state >= 5) {
-      state = 1;
+    if(state == 2 || state == 3) {
+      LCD_DISPLAY();
     }
-  }*/
+  }
 }
 
 //ANALOG COMPARATOR ISR
@@ -187,7 +196,6 @@ ISR(ANALOG_COMP_vect)
 {
   if(value ==0)
   {
-    Serial.println("HERE");
     *portH ^= 0x10;
     state = 4;
   }
@@ -225,6 +233,18 @@ void WATER_LEVEL() {
 
 void start() {
   state = 2;
+}
+
+void STEPPER() {
+  // Rotate CW slowly at 5 RPM
+  myStepper.setSpeed(5);
+  myStepper.step(stepsPerRevolution);
+  my_delay(1000);
+
+  // Rotate CCW quickly at 10 RPM
+  myStepper.setSpeed(10);
+  myStepper.step(-stepsPerRevolution);
+  my_delay(1000);
 }
 
 void LEDS_OFF() {

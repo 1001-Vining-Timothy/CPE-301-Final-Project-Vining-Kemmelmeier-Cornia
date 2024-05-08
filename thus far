@@ -70,19 +70,22 @@ int state = 0;
 long previousMillis = 0;
 long interval = 60000;
 
-float temp_threshold = 24;
+float temp_threshold = 100;
 
 //Fan motor
-int speedPin = 23;
-int dir1 = 25;
-int dir2 = 27;
-int mSpeed = 75;
+int pin25 = 25;
+int pin27 = 27;
+
+const int buttonPin0 = 35;
+const int buttonPin1 = 33;
+int buttonState0 = 0;
+int buttonState1 = 0;
 
 void setup()
 {
   //setup the UART
   U0Init(9600);
-
+  Serial.begin(9600);
   //setup the ADC
   adc_init();
 
@@ -101,10 +104,8 @@ void setup()
   }
 
   //Fan motor
-  int mSpeed = 90;
-  pinMode(speedPin, OUTPUT);
-  pinMode(dir1, OUTPUT);
-  pinMode(dir, OUTPUT);
+  pinMode(pin25, OUTPUT);
+  pinMode(pin27, OUTPUT);
   //Water Level
   //set PH4 to output
   *portDDRH |= 0x10;
@@ -118,7 +119,10 @@ void setup()
   *portDDRD |= 0xF7; // start & stop button set to input
   *portD |= 0x01 << 3; // enable pullup resistor on start button
   *pinD |= ~0x01 << 3; // set start to low
+  pinMode(19, INPUT_PULLUP);
   attachInterrupt(digitalPinToInterrupt(18), start, CHANGE);
+  //attachInterrupt(digitalPinToInterrupt(19), stop, CHANGE);
+  
   
   //set PE3 (pin 5) to OUTPUT -- ERROR (RED)
   *ddr_e |= 0x01 << 3;
@@ -129,32 +133,57 @@ void setup()
   //set PE4 (pin 2) to OUTPUT -- RUNNING (BLUE)
   *ddr_e |= 0x01 << 4;
 
+  //Buttons for the Stepper motor
+  pinMode(buttonPin0, INPUT);
+  pinMode(buttonPin1, INPUT);
+
   // set state to Disabled 
   state = 1;
 }
 
 void loop() 
 {
+  LEDS_OFF();
+  LEDS_ON(state);
+
+  if(state != 1 && state != 4) {
+    STEPPER();
+    //Serial.println(state);
+  }
+  FAN(state);
+
+  //check temp
   int chk = DHT.read(DHT11_PIN);
-  if((DHT.temperature) > temp_threshold) {
+  if((DHT.temperature) > temp_threshold && state == 2) {
+    LCD_DISPLAY(); 
     state = 3;
-    LCD_DISPLAY();
+  }
+  if((DHT.temperature) <= temp_threshold && state == 3) {
+    LCD_DISPLAY(); 
+    state = 2;
+  }
+  //check water level 
+  WATER_LEVEL();
+  if(value < 4 && state != 1) {
+    state = 4;
+    Serial.println(value);
   }
 
+  if(digitalRead(19) == 1) {
+    state = 1;
+  }
   /* DISABLED */
   if(state == 1) {
-    LEDS_OFF();
-    //yellow LED on
-    *pin_g |= 0x01 << 5;
     //fan off
+      lcd.clear();
+      lcd.setCursor(0,0);
+      lcd.print("Temp:");
+      lcd.setCursor(0,1);
+      lcd.print("Humidity:");
     //vent position should be adjustable
   }
   /* IDLE */
   if(state == 2) {
-    LEDS_OFF();
-    //green LED on
-    *pin_e |= 0x01 << 5;
-    LCD_DISPLAY();
     //fan off
     //temp and humidity displayed on LCD
     
@@ -163,10 +192,7 @@ void loop()
 
   /* RUNNING */
   if(state == 3) {
-    LEDS_OFF();
-    Serial.println(state);
-    //blue LED on
-    *pin_e |= 0x01 << 4;
+    //digitalWrite(18, HIGH);
     //on entry start fan
     //on exit stop fan
     //vent position should be adjustable
@@ -174,9 +200,6 @@ void loop()
 
   /* ERROR */
   if(state == 4) {
-    LEDS_OFF();
-    //red LED on
-    *pin_e |= 0x01 << 3;
     //display error message on LCD
     LCD_ERROR();
   } 
@@ -189,12 +212,14 @@ void loop()
       LCD_DISPLAY();
     }
   }
+
+  LEDS_OFF();
 }
 
 //ANALOG COMPARATOR ISR
 ISR(ANALOG_COMP_vect)
 {
-  if(value ==0)
+  if(value == 0)
   {
     *portH ^= 0x10;
     state = 4;
@@ -212,7 +237,7 @@ void LCD_DISPLAY() {
   lcd.setCursor(0,1);
   lcd.print("Humidity:");
   lcd.setCursor(5,0);
-  lcd.print(DHT.temperature * 9 / 5 + 32);
+  lcd.print(DHT.temperature);
   lcd.setCursor(9,1);
   lcd.print(DHT.humidity);
 }
@@ -220,7 +245,9 @@ void LCD_DISPLAY() {
 void LCD_ERROR() {
   lcd.clear();
   lcd.setCursor(0,0);
-  lcd.print("Water level is too low");
+  lcd.print("Water level is");
+  lcd.setCursor(0,1);
+  lcd.print("too low");
 }
 
 //WATER LEVEL FUNCTION
@@ -233,25 +260,88 @@ void WATER_LEVEL() {
 
 void start() {
   state = 2;
+
+  LCD_DISPLAY();
+}
+
+void stop() {
+  state = 1;
 }
 
 void STEPPER() {
-  // Rotate CW slowly at 5 RPM
-  myStepper.setSpeed(5);
-  myStepper.step(stepsPerRevolution);
-  my_delay(1000);
-
-  // Rotate CCW quickly at 10 RPM
-  myStepper.setSpeed(10);
-  myStepper.step(-stepsPerRevolution);
-  my_delay(1000);
+  buttonState0 = digitalRead(buttonPin0);
+  buttonState1 = digitalRead(buttonPin1);
+  // If button 0 is pressed, rotate the stepper clockwise
+  if (buttonState0 == HIGH && buttonState1 == LOW) {
+    myStepper.setSpeed(10);
+    myStepper.step(stepsPerRevolution/4);
+    //my_delay(1000);
+    Serial.print("Vent moves clockwise at: ");
+    RTC_fun();
+  }
+  // If button 1 is pressed, rotate the stepper counterclockwise
+  else if (buttonState1 == HIGH && buttonState0 == LOW) {
+    myStepper.setSpeed(10);
+    myStepper.step(-stepsPerRevolution/4);
+    //my_delay(1000);
+    Serial.print("Vent moves counter-clockwise at: ");
+    RTC_fun();
+  }
 }
 
+void RTC_fun() {
+  Serial.print(RTC.getHours());
+  Serial.print(":");
+  Serial.print(RTC.getMinutes());
+  Serial.print(":");
+  Serial.println(RTC.getSeconds());
+}
+
+void FAN(int state) {
+   // put your main code here, to run repeatedly:
+   if(state == 3) {
+      digitalWrite(pin25,LOW);
+      digitalWrite(pin27,HIGH);
+    }
+    else {
+        digitalWrite(pin25,LOW);
+        digitalWrite(pin27,LOW);
+    }
+
+}
 void LEDS_OFF() {
   *pin_g |= 0x00 << 5;
   *pin_e |= 0x00 << 5;
   *pin_e |= 0x00 << 4;
   *pin_e |= 0x00 << 3;
+}
+
+void LEDS_ON(int state) {
+  switch(state) {
+    case 1: {
+      //yellow LED on
+      *pin_g |= 0x01 << 5;
+      break;
+    }
+    case 2: {
+      //green LED on
+      *pin_e |= 0x01 << 5;
+      break;
+    } 
+    case 3: {
+      //blue LED on
+      *pin_e |= 0x01 << 4;
+      break;
+    }
+    case 4: {
+      //red LED on
+      *pin_e |= 0x01 << 3;
+      break;
+    }
+    default: {
+      LEDS_OFF();
+    }
+  }
 }
 
 //UART FUNCTIONS

@@ -81,6 +81,8 @@ const int buttonPin1 = 33;
 int buttonState0 = 0;
 int buttonState1 = 0;
 
+int previousState = 0;
+
 void setup()
 {
   //setup the UART
@@ -139,39 +141,76 @@ void setup()
 
   // set state to Disabled 
   state = 1;
+  //Serial.println("Disabled at: ");
+  //RTC_fun();
 }
 
 void loop() 
 {
-  LEDS_OFF();
+  if(previousState != state) {
+    switch(state) {
+    case 1: {
+      Serial.print("Disabled at: ");
+      RTC_fun();
+      LEDS_ON(state);
+      previousState = state;
+      break;
+    }
+    case 2: {
+      Serial.print("Idle at: ");
+      RTC_fun();
+      LEDS_ON(state);
+      previousState = state;
+      break;
+    } 
+    case 3: {
+      Serial.print("Running at: ");
+      RTC_fun();
+      LEDS_ON(state);
+      previousState = state;
+      break;
+    }
+    case 4: {
+      Serial.print("Error at: ");
+      RTC_fun();
+      LEDS_ON(state);
+      previousState = state;
+      break;
+    }
+  }
+  }
   LEDS_ON(state);
-
   if(state != 1 && state != 4) {
     STEPPER();
-    //Serial.println(state);
   }
   FAN(state);
 
   //check temp
   int chk = DHT.read(DHT11_PIN);
   if((DHT.temperature) > temp_threshold && state == 2) {
-    LCD_DISPLAY(); 
     state = 3;
+    Serial.println("Running at: ");
+    RTC_fun();
   }
   if((DHT.temperature) <= temp_threshold && state == 3) {
-    LCD_DISPLAY(); 
+    Serial.println("Idle at: ");
+    RTC_fun();
     state = 2;
   }
+
   //check water level 
   WATER_LEVEL();
-  if(value < 4 && state != 1) {
+  if(value < 4 && state != 1 && previousState != 4) {
     state = 4;
-    Serial.println(value);
   }
 
   if(digitalRead(19) == 1) {
+    Serial.println("Disabled at: ");
+    RTC_fun();
     state = 1;
+    LEDS_OFF();
   }
+
   /* DISABLED */
   if(state == 1) {
     //fan off
@@ -180,21 +219,6 @@ void loop()
       lcd.print("Temp:");
       lcd.setCursor(0,1);
       lcd.print("Humidity:");
-    //vent position should be adjustable
-  }
-  /* IDLE */
-  if(state == 2) {
-    //fan off
-    //temp and humidity displayed on LCD
-    
-    //vent position should be adjustable
-  }
-
-  /* RUNNING */
-  if(state == 3) {
-    //digitalWrite(18, HIGH);
-    //on entry start fan
-    //on exit stop fan
     //vent position should be adjustable
   }
 
@@ -212,18 +236,7 @@ void loop()
       LCD_DISPLAY();
     }
   }
-
-  LEDS_OFF();
-}
-
-//ANALOG COMPARATOR ISR
-ISR(ANALOG_COMP_vect)
-{
-  if(value == 0)
-  {
-    *portH ^= 0x10;
-    state = 4;
-  }
+  Serial.println(state);
 }
 
 //LCD FUNCTION
@@ -260,12 +273,6 @@ void WATER_LEVEL() {
 
 void start() {
   state = 2;
-
-  LCD_DISPLAY();
-}
-
-void stop() {
-  state = 1;
 }
 
 void STEPPER() {
@@ -310,30 +317,35 @@ void FAN(int state) {
 
 }
 void LEDS_OFF() {
-  *pin_g |= 0x00 << 5;
-  *pin_e |= 0x00 << 5;
-  *pin_e |= 0x00 << 4;
-  *pin_e |= 0x00 << 3;
+  *pin_g &= ~(0x01 << 5);
+  *pin_e &= ~(0x01 << 5);
+  *pin_e &= ~(0x01 << 4);
+  *pin_e &= ~(0x01 << 3);
+  
 }
 
 void LEDS_ON(int state) {
   switch(state) {
     case 1: {
+      LEDS_OFF();
       //yellow LED on
       *pin_g |= 0x01 << 5;
       break;
     }
     case 2: {
+      LEDS_OFF();
       //green LED on
       *pin_e |= 0x01 << 5;
       break;
     } 
     case 3: {
+      LEDS_OFF();
       //blue LED on
       *pin_e |= 0x01 << 4;
       break;
     }
     case 4: {
+      LEDS_OFF();
       //red LED on
       *pin_e |= 0x01 << 3;
       break;

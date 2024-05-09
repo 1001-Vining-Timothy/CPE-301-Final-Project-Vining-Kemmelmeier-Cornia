@@ -1,0 +1,456 @@
+#include <LiquidCrystal.h>
+#include <Keypad.h>
+#include <I2C_RTC.h>
+static DS1307 RTC;
+#include <dht.h>
+#include <Stepper.h>
+const int stepsPerRevolution = 2038;
+dht DHT;
+#define DHT11_PIN 53
+#define RDA 0x80
+#define TBE 0x20
+#define POWER_PIN 7
+#define SIGNAL_PIN A5
+
+// Creates an instance of stepper class
+// Pins entered in sequence IN1-IN3-IN2-IN4 for proper step sequence
+Stepper myStepper = Stepper(stepsPerRevolution, 8, 10, 9, 11);
+
+// LCD pins <--> Arduino pins
+const int RS = 50, EN = 52, D4 = 45, D5 = 47, D6 = 49, D7 = 51;
+LiquidCrystal lcd(RS, EN, D4, D5, D6, D7);
+
+// UART Pointers
+volatile unsigned char *myUCSR0A  = (unsigned char *) 0x00C0;
+volatile unsigned char *myUCSR0B  = (unsigned char *) 0x00C1;
+volatile unsigned char *myUCSR0C  = (unsigned char *) 0x00C2;
+volatile unsigned int  *myUBRR0   = (unsigned  int *) 0x00C4;
+volatile unsigned char *myUDR0    = (unsigned char *) 0x00C6;
+// GPIO Pointers
+volatile unsigned char *portB     = (unsigned char *) 0x25;
+volatile unsigned char *portDDRB  = (unsigned char *) 0x24;
+volatile unsigned char *portH     = (unsigned char *) 0x102;
+volatile unsigned char *portDDRH  = (unsigned char *) 0x101;
+volatile unsigned char *portA     = (unsigned char *) 0x22; // fan motor pins 25, 27
+volatile unsigned char *portDDRA  = (unsigned char *) 0x21;
+volatile unsigned char *pinA      = (unsigned char *) 0x20;
+volatile unsigned char *portD     = (unsigned char *) 0x2B;
+volatile unsigned char *portDDRD  = (unsigned char *) 0x2A;
+volatile unsigned char *pinD      = (unsigned char *) 0x29;
+volatile unsigned char* port_e    = (unsigned char*)0x2E;
+volatile unsigned char* ddr_e     = (unsigned char*)0x2D;
+volatile unsigned char* pin_e     = (unsigned char*)0x2C;
+volatile unsigned char* port_g    = (unsigned char*)0x34;
+volatile unsigned char* ddr_g     = (unsigned char*)0x33;
+volatile unsigned char* pin_g     = (unsigned char*)0x32;
+volatile unsigned char *portC     = (unsigned char *) 0x28; // Stepper pins 35, 33
+volatile unsigned char *portDDRC  = (unsigned char *) 0x27;
+volatile unsigned char *pinC      = (unsigned char *) 0x26;
+// Timer Pointers
+volatile unsigned char *myTCCR1A  = (unsigned char *) 0x80;
+volatile unsigned char *myTCCR1B  = (unsigned char *) 0x81;
+volatile unsigned char *myTCCR1C  = (unsigned char *) 0x82;
+volatile unsigned char *myTIMSK1  = (unsigned char *) 0x6F;
+volatile unsigned char *myTIFR1   = (unsigned char *) 0x36;
+volatile unsigned int  *myTCNT1   = (unsigned  int *) 0x84;
+//ADC
+volatile unsigned char* my_ADMUX = (unsigned char*) 0x7C;
+volatile unsigned char* my_ADCSRB = (unsigned char*) 0x7B;
+volatile unsigned char* my_ADCSRA = (unsigned char*) 0x7A;
+volatile unsigned int* my_ADC_DATA = (unsigned int*) 0x78;
+
+//Water level
+int value = 0;
+int temp = 0;
+int humidity = 0;
+
+//States and timing for millis
+int previousState = 0;
+int state = 0;
+long previousMillis = 0;
+long interval = 60000;
+
+float temp_threshold = 30;
+
+//Fan motor
+int pin25 = 25;
+int pin27 = 27;
+
+//Stepper motor
+const int buttonPin0 = 35;
+const int buttonPin1 = 33;
+int buttonState0 = 0;
+int buttonState1 = 0;
+
+
+
+void setup()
+{
+  //setup the UART
+  U0Init(9600);
+  //setup the ADC
+  adc_init();
+
+  //LCD
+  lcd.begin(16,2);
+  lcd.setCursor(0,0);
+  lcd.print("Temp:");
+  lcd.setCursor(0,1);
+  lcd.print("Humidity:");
+
+  //Real Time Clock
+  RTC.begin();
+  RTC.setHourMode(CLOCK_H12);
+  if (RTC.getHourMode() == CLOCK_H12) {
+    RTC.setMeridiem(HOUR_PM);
+  }
+  //Fan motor
+  *portDDRA |= 0xD7; // start & stop button set to input
+  *pinA     &= ~(0x01 << 5);
+  *pinA     &= ~(0x01 << 3);
+
+  //Water Level
+  *portDDRH |= 0x10; //set PH4 to output
+  *portH    &= 0xEF; //set PH4 to LOW
+
+  //Button inputs
+  *portDDRD |= 0xF3; // start & stop button set to input -- Digital 18 (PD3) & Digital 19 (PD2)
+  *portD |= 0x01 << 3; // enable pullup resistor on start button
+  *pinD |= ~0x01 << 3; // set start to low
+  *portD |= 0x01 << 2;
+  *pinD |= 0x01 << 1;
+  attachInterrupt(digitalPinToInterrupt(18), start, CHANGE);
+  
+  //set PE3 (pin 5) to OUTPUT -- ERROR (RED)
+  *ddr_e |= 0x01 << 3;
+  //set PG5 (pin 4) to OUTPUT -- DISABLED (YELLOW)
+  *ddr_g |= 0x01 << 5;
+  //set PE5 (pin 3) to OUTPUT -- IDLE (GREEN)
+  *ddr_e |= 0x01 << 5;
+  //set PE4 (pin 2) to OUTPUT -- RUNNING (BLUE)
+  *ddr_e |= 0x01 << 4;
+  
+  //Buttons for the Stepper motor
+  // digital pins 33, 35 -> PC4, PC2
+  *portDDRC |= 0xEB; // 
+  *portC |= 0x01 << 4; 
+  *pinC |= ~0x01 << 4; 
+  *portC |= 0x01 << 2;
+  *pinC |= ~0x01 << 2;
+
+  // set state to Disabled 
+  state = 1; 
+}
+
+void loop() 
+{
+  if(previousState != state) {
+    switch(state) {
+      case 1: {
+        putString("Disabled at: ");
+        RTC_fun();
+        LEDS_ON(state);
+        previousState = state;
+        break;
+      }
+      case 2: {
+        putString("Idle at: ");
+        RTC_fun();
+        LEDS_ON(state);
+        previousState = state;
+        LCD_DISPLAY();
+        break;
+      } 
+      case 3: {
+        putString("Running at: ");
+        RTC_fun();
+        LEDS_ON(state);
+        previousState = state;
+        LCD_DISPLAY();
+        break;
+      }
+      case 4: {
+        putString("Error at: ");
+        RTC_fun();
+        LEDS_ON(state);
+        previousState = state;
+        break;
+      }
+    }
+  }
+
+  //Stepper Motor
+  if(state != 1 && state != 4) {
+    STEPPER();
+  }
+  
+  //Fan function called and uses state parameter
+  FAN(state);
+
+  //check temp
+  int chk = DHT.read11(DHT11_PIN);
+  if((DHT.temperature) > temp_threshold && state == 2) {
+    state = 3;
+  }
+  if((DHT.temperature) <= temp_threshold && state == 3) {
+    state = 2;
+  }
+
+  //check water level 
+  WATER_LEVEL();
+  if(value < 4 && state != 1 && previousState != 4) {
+    state = 4;
+  }
+
+  //Changes back to disabled
+  if(*pinD & 0x4) {
+    state = 1;
+    lcd.clear();
+    lcd.setCursor(0,0);
+    lcd.print("Temp:");
+    lcd.setCursor(0,1);
+    lcd.print("Humidity:");
+  }
+
+  /* ERROR */
+  if(state == 4) {
+    //display error message on LCD
+    LCD_ERROR();
+  } 
+
+  //switch state every (interval) milliseconds
+  unsigned long currentMillis = millis();
+  if(currentMillis - previousMillis > interval) {
+    previousMillis = currentMillis;
+    if(state == 2 || state == 3) {
+      LCD_DISPLAY();
+    }
+  }
+}
+
+//LCD FUNCTION
+void LCD_DISPLAY() {
+    //Temp Humidity
+  int chk = DHT.read11(DHT11_PIN);
+  //LCD
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Temp:");
+  lcd.setCursor(0,1);
+  lcd.print("Humidity:");
+  lcd.setCursor(5,0);
+  lcd.print(DHT.temperature);
+  lcd.setCursor(9,1);
+  lcd.print(DHT.humidity);
+}
+
+void LCD_ERROR() {
+  lcd.clear();
+  lcd.setCursor(0,0);
+  lcd.print("Water level is");
+  lcd.setCursor(0,1);
+  lcd.print("too low");
+}
+
+//WATER LEVEL FUNCTION
+void WATER_LEVEL() {
+  //Water Level
+  *portH |= 0x10;
+  value = adc_read(7);
+  *portH &= ~0x10;
+}
+
+void start() {
+  state = 2;
+}
+
+void STEPPER() {
+  buttonState0 = digitalRead(buttonPin0);
+  buttonState1 = digitalRead(buttonPin1);
+  // If button 0 is pressed, rotate the stepper clockwise
+  if (buttonState0 == HIGH && buttonState1 == LOW) {
+    myStepper.setSpeed(10);
+    myStepper.step(stepsPerRevolution/4);
+    //my_delay(1000);
+    putString("Vent moves clockwise at: ");
+    RTC_fun();
+  }
+  // If button 1 is pressed, rotate the stepper counterclockwise
+  else if (buttonState1 == HIGH && buttonState0 == LOW) {
+    myStepper.setSpeed(10);
+    myStepper.step(-stepsPerRevolution/4);
+    //my_delay(1000);
+    putString("Vent moves counter-clockwise at: ");
+    RTC_fun();
+  }
+}
+
+void FAN(int state) {
+   // put your main code here, to run repeatedly:
+   if(state == 3) {
+      digitalWrite(pin25,LOW);
+      digitalWrite(pin27,HIGH);
+    }
+    else {
+        digitalWrite(pin25,LOW);
+        digitalWrite(pin27,LOW);
+    }
+}
+
+void LEDS_OFF() {
+  *pin_g &= ~(0x01 << 5); //YELLOW
+  *pin_e &= ~(0x01 << 5); //GREEN
+  *pin_e &= ~(0x01 << 4); //BLUE
+  *pin_e &= ~(0x01 << 3); //RED
+}
+
+void LEDS_ON(int state) {
+  switch(state) {
+    case 1: {
+      LEDS_OFF();
+      //yellow LED on
+      *pin_g |= (0x01 << 5); //y
+      break;
+    }
+    case 2: {
+      LEDS_OFF();
+      //green LED on
+      *pin_e |= (0x01 << 5);
+      break;
+    } 
+    case 3: {
+      LEDS_OFF();
+      //blue LED on
+      *pin_e |= (0x01 << 4);
+      break;
+    }
+    case 4: {
+      LEDS_OFF();
+      //red LED on
+      *pin_e |= (0x01 << 3);
+      break;
+    }
+    default: {
+      LEDS_OFF();
+    }
+  }
+}
+
+//UART FUNCTIONS
+void U0Init(int U0baud)
+{
+ unsigned long FCPU = 16000000;
+ unsigned int tbaud;
+ tbaud = (FCPU / 16 / U0baud - 1);
+ // Same as (FCPU / (16 * U0baud)) - 1;
+ *myUCSR0A = 0x20;
+ *myUCSR0B = 0x18;
+ *myUCSR0C = 0x06;
+ *myUBRR0  = tbaud;
+}
+unsigned char kbhit()
+{
+  return *myUCSR0A & RDA;
+}
+unsigned char getChar()
+{
+  return *myUDR0;
+}
+void putChar(unsigned char U0pdata)
+{
+  while((*myUCSR0A & TBE)==0);
+  *myUDR0 = U0pdata;
+}
+
+//DELAY FUNCTION - REGULAR
+void my_delay(unsigned int freq)
+{
+  // calc period
+  double period = 1.0/double(freq);
+  // 50% duty cycle
+  double half_period = period/ 2.0f;
+  // clock period def
+  double clk_period = 0.0000000625;
+  // calc ticks
+  unsigned int ticks = half_period / clk_period;
+  // stop the timer
+  *myTCCR1B &= 0xF8;
+  // set the counts
+  *myTCNT1 = (unsigned int) (65536 - ticks);
+  // start the timer
+  * myTCCR1A = 0x0;
+  * myTCCR1B |= 0b00000001;
+  // wait for overflow
+  while((*myTIFR1 & 0x01)==0); // 0b 0000 0000
+  // stop the timer
+  *myTCCR1B &= 0xF8;   // 0b 0000 0000
+  // reset TOV           
+  *myTIFR1 |= 0x01;
+}
+
+//ADC FUNCTIONS
+void adc_init()
+{
+  // setup the A register
+  *my_ADCSRA |= 0b10000000; // set bit   7 to 1 to enable the ADC
+  *my_ADCSRA &= 0b11011111; // clear bit 6 to 0 to disable the ADC trigger mode
+  *my_ADCSRA &= 0b11110111; // clear bit 5 to 0 to disable the ADC interrupt
+  *my_ADCSRA &= 0b11111000; // clear bit 0-2 to 0 to set prescaler selection to slow reading
+  // setup the B register
+  *my_ADCSRB &= 0b11110111; // clear bit 3 to 0 to reset the channel and gain bits
+  *my_ADCSRB &= 0b11111000; // clear bit 2-0 to 0 to set free running mode
+  // setup the MUX Register
+  *my_ADMUX  &= 0b01111111; // clear bit 7 to 0 for AVCC analog reference
+  *my_ADMUX  |= 0b01000000; // set bit   6 to 1 for AVCC analog reference
+  *my_ADMUX  &= 0b11011111; // clear bit 5 to 0 for right adjust result
+  *my_ADMUX  &= 0b11100000; // clear bit 4-0 to 0 to reset the channel and gain bits
+}
+unsigned int adc_read(unsigned char adc_channel_num)
+{
+  // clear the channel selection bits (MUX 4:0)
+  *my_ADMUX  &= 0b11100000;
+  // clear the channel selection bits (MUX 5)
+  *my_ADCSRB &= 0b11110111;
+  // set the channel number
+  if(adc_channel_num > 7)
+  {
+    // set the channel selection bits, but remove the most significant bit (bit 3)
+    adc_channel_num -= 8;
+    // set MUX bit 5
+    *my_ADCSRB |= 0b00001000;
+  }
+  // set the channel selection bits
+  *my_ADMUX  += adc_channel_num;
+  // set bit 6 of ADCSRA to 1 to start a conversion
+  *my_ADCSRA |= 0x40;
+  // wait for the conversion to complete
+  while((*my_ADCSRA & 0x40) != 0);
+  // return the result in the ADC data register
+  return *my_ADC_DATA;
+}
+
+// Function to send a string over UART
+void putString(const char *str) {
+  // Loop through each character in the string
+  while (*str != '\0') {
+    putChar(*str);
+    str++;
+  }
+}
+// Function to send an integer over UART
+void putInt(int num) {
+  // Convert the integer to a string
+  char buffer[10];
+  itoa(num, buffer, 10);
+  putString(buffer);
+}
+
+// Example
+void RTC_fun() {
+  putInt(RTC.getHours());
+  putChar(':');
+  putInt(RTC.getMinutes());
+  putChar(':');
+  putInt(RTC.getSeconds());
+  putChar('\n');
+}

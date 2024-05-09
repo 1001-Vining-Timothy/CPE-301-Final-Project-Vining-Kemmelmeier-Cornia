@@ -70,7 +70,7 @@ int state = 0;
 long previousMillis = 0;
 long interval = 60000;
 
-float temp_threshold = 100;
+float temp_threshold = 30;
 
 //Fan motor
 int pin25 = 25;
@@ -161,6 +161,7 @@ void loop()
       RTC_fun();
       LEDS_ON(state);
       previousState = state;
+      LCD_DISPLAY();
       break;
     } 
     case 3: {
@@ -168,6 +169,7 @@ void loop()
       RTC_fun();
       LEDS_ON(state);
       previousState = state;
+      LCD_DISPLAY();
       break;
     }
     case 4: {
@@ -180,21 +182,19 @@ void loop()
   }
   }
   LEDS_ON(state);
+
   if(state != 1 && state != 4) {
     STEPPER();
   }
+
   FAN(state);
 
   //check temp
-  int chk = DHT.read(DHT11_PIN);
+  int chk = DHT.read11(DHT11_PIN);
   if((DHT.temperature) > temp_threshold && state == 2) {
     state = 3;
-    Serial.println("Running at: ");
-    RTC_fun();
   }
   if((DHT.temperature) <= temp_threshold && state == 3) {
-    Serial.println("Idle at: ");
-    RTC_fun();
     state = 2;
   }
 
@@ -208,7 +208,6 @@ void loop()
     Serial.println("Disabled at: ");
     RTC_fun();
     state = 1;
-    LEDS_OFF();
   }
 
   /* DISABLED */
@@ -236,7 +235,6 @@ void loop()
       LCD_DISPLAY();
     }
   }
-  Serial.println(state);
 }
 
 //LCD FUNCTION
@@ -314,14 +312,13 @@ void FAN(int state) {
         digitalWrite(pin25,LOW);
         digitalWrite(pin27,LOW);
     }
-
 }
+
 void LEDS_OFF() {
   *pin_g &= ~(0x01 << 5);
   *pin_e &= ~(0x01 << 5);
   *pin_e &= ~(0x01 << 4);
   *pin_e &= ~(0x01 << 3);
-  
 }
 
 void LEDS_ON(int state) {
